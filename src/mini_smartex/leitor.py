@@ -17,10 +17,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from pymodbus.client import AsyncModbusTcpClient
+from pymodbus.exceptions import ModbusException
 
 from mini_smartex import dicionario, mapa
 
 DEVICE_ID = 1
+# Tempo de espera entre tentativas de (re)conexão com o servidor, em segundos.
+# Para mudar o padrão, altere aqui; para um teste pontual, use --reconexao.
+INTERVALO_RECONEXAO_S = 5.0
 
 
 def formatar(tags: list[dicionario.Tag], valores: dict[str, float | bool]) -> str:
@@ -40,22 +44,50 @@ def formatar(tags: list[dicionario.Tag], valores: dict[str, float | bool]) -> st
     return "\n".join(linhas)
 
 
+async def conectar(client: AsyncModbusTcpClient, espera: float, insistir: bool) -> bool:
+    """Conecta ao servidor. Com `insistir`, tenta de novo a cada `espera` segundos."""
+    while True:
+        try:
+            await client.connect()
+        except OSError:
+            pass
+        if client.connected:
+            print("Conectado ao servidor.")
+            return True
+        if not insistir:
+            return False
+        print(f"Sem conexão com o servidor. Nova tentativa em {espera:g} s...")
+        await asyncio.sleep(espera)
+
+
 async def executar(args: argparse.Namespace) -> None:
     caminho = Path(args.dicionario) if args.dicionario else dicionario.localizar_dicionario()
     tags = dicionario.carregar(caminho)
     inicio, quantidade = mapa.faixa_de_leitura(tags)
 
     client = AsyncModbusTcpClient(args.host, port=args.porta)
-    await client.connect()
-    if not client.connected:
+    # Com --uma-vez não vale a pena insistir: tenta conectar uma única vez
+    if not await conectar(client, args.reconexao, insistir=not args.uma_vez):
         print("Não foi possível conectar. O simulador está rodando?")
         return
     try:
         while True:
             # Uma requisição só para todos os registradores (bloco contíguo)
-            resposta = await client.read_holding_registers(inicio, count=quantidade, device_id=DEVICE_ID)
+            try:
+                resposta = await client.read_holding_registers(
+                    inicio, count=quantidade, device_id=DEVICE_ID
+                )
+            except (ModbusException, OSError) as erro:
+                resposta = erro
             ts = datetime.now(UTC)  # timestamp carimbado no coletor, em UTC
-            if resposta.isError():
+            if not client.connected:
+                print(f"[{ts:%H:%M:%S}Z] Conexão perdida com o servidor.")
+                if args.uma_vez:
+                    break
+                client.close()
+                await conectar(client, args.reconexao, insistir=True)
+                continue
+            if isinstance(resposta, Exception) or resposta.isError():
                 print(f"[{ts:%H:%M:%S}Z] Erro na leitura: {resposta}")
             else:
                 registradores = dict(enumerate(resposta.registers, start=inicio))
@@ -67,7 +99,6 @@ async def executar(args: argparse.Namespace) -> None:
             await asyncio.sleep(args.intervalo)
     finally:
         client.close()
-        print("Servidor desconectato! O simulador ainda está rodando?")
 
 
 def main() -> None:
@@ -75,6 +106,12 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--porta", type=int, default=5020)
     parser.add_argument("--intervalo", type=float, default=1.0)
+    parser.add_argument(
+        "--reconexao",
+        type=float,
+        default=INTERVALO_RECONEXAO_S,
+        help="segundos entre tentativas de reconexão (padrão: %(default)s)",
+    )
     parser.add_argument("--uma-vez", action="store_true")
     parser.add_argument("--ordem-forcada", choices=["ABCD", "CDAB"], default=None)
     parser.add_argument("--dicionario", default=None)
