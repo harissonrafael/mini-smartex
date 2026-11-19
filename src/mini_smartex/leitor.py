@@ -13,13 +13,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from datetime import UTC, datetime
 from pathlib import Path
 
 from pymodbus.client import AsyncModbusTcpClient
 from pymodbus.exceptions import ModbusException
 
-from mini_smartex import dicionario, mapa
+from mini_smartex import dicionario, mapa, tempo
 
 DEVICE_ID = 1
 # Tempo de espera entre tentativas de (re)conexão com o servidor, em segundos.
@@ -79,16 +78,16 @@ async def executar(args: argparse.Namespace) -> None:
                 )
             except (ModbusException, OSError) as erro:
                 resposta = erro
-            ts = datetime.now(UTC)  # timestamp carimbado no coletor, em UTC
+            ts = tempo.agora()  # timestamp carimbado no coletor, no fuso de tempo.FUSO
             if not client.connected:
-                print(f"[{ts:%H:%M:%S}Z] Conexão perdida com o servidor.")
+                print(f"[{ts:%H:%M:%S %Z}] Conexão perdida com o servidor.")
                 if args.uma_vez:
                     break
                 client.close()
                 await conectar(client, args.reconexao, insistir=True)
                 continue
             if isinstance(resposta, Exception) or resposta.isError():
-                print(f"[{ts:%H:%M:%S}Z] Erro na leitura: {resposta}")
+                print(f"[{ts:%H:%M:%S %Z}] Erro na leitura: {resposta}")
             else:
                 registradores = dict(enumerate(resposta.registers, start=inicio))
                 valores = mapa.decodificar(tags, registradores, args.ordem_forcada)

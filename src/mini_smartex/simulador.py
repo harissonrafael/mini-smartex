@@ -23,7 +23,7 @@ from pathlib import Path
 from pymodbus.server import ModbusTcpServer
 from pymodbus.simulator import DataType, SimData, SimDevice
 
-from mini_smartex import dicionario, mapa
+from mini_smartex import dicionario, mapa, tempo
 from mini_smartex.processo import TAGS_SIMULADAS, Extrusora
 
 log = logging.getLogger("simulador")
@@ -100,7 +100,7 @@ def main() -> None:
     parser.add_argument("--dicionario", default=None, help="caminho do dicionario-de-dados.csv")
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+    tempo.configurar_logging()
     try:
         asyncio.run(executar(args))
     except KeyboardInterrupt:
