@@ -26,12 +26,20 @@ DEVICE_ID = 1
 INTERVALO_RECONEXAO_S = 5.0
 
 
-def formatar(tags: list[dicionario.Tag], valores: dict[str, float | bool]) -> str:
-    linhas = [f"{'tag':<22} {'valor':>12}  {'unidade':<6} faixa"]
+def formatar(
+    tags: list[dicionario.Tag],
+    valores: dict[str, float | bool | None],
+    diagnosticos: dict[str, tuple[float, str]] | None = None,
+) -> str:
+    diagnosticos = diagnosticos or {}
+    linhas = [f"{'tag':<22} {'valor':>12}  {'unidade':<6} qualidade"]
     for t in tags:
         valor = valores[t.tag]
         if isinstance(valor, bool):
             texto = "LIGADO" if valor else "-"
+            aviso = ""
+        elif valor is None:
+            texto = "—"
             aviso = ""
         else:
             texto = f"{valor:.3f}" if t.unidade == "mm" else f"{valor:.1f}"
@@ -39,6 +47,9 @@ def formatar(tags: list[dicionario.Tag], valores: dict[str, float | bool]) -> st
                 t.faixa_max is not None and valor > t.faixa_max
             )
             aviso = "FORA DA FAIXA VÁLIDA" if fora else "ok"
+        if t.tag in diagnosticos:  # sinal 4–20 mA: mostra a corrente e o diagnóstico NE43
+            ma, diag = diagnosticos[t.tag]
+            aviso = f"{ma:6.2f} mA  {diag.upper() if diag != 'ok' else aviso}"
         linhas.append(f"{t.tag:<22} {texto:>12}  {t.unidade:<6} {aviso}")
     return "\n".join(linhas)
 
@@ -92,7 +103,7 @@ async def executar(args: argparse.Namespace) -> None:
                 registradores = dict(enumerate(resposta.registers, start=inicio))
                 valores = mapa.decodificar(tags, registradores, args.ordem_forcada)
                 print(f"\n[{ts.isoformat(timespec='seconds')}] HR {inicio}..{inicio + quantidade - 1}")
-                print(formatar(tags, valores))
+                print(formatar(tags, valores, mapa.diagnosticar(tags, registradores)))
             if args.uma_vez:
                 break
             await asyncio.sleep(args.intervalo)

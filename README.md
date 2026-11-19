@@ -2,7 +2,7 @@
 
 Versão de estudo, em escala reduzida, do pipeline de dados do projeto SMARTEX (extrusão de cabos, MPT Cable). O plano completo está em `../../../docs/plano-de-estudos.md`, seção 8.
 
-Etapa atual: **simulador da extrusora v1** (cronograma de 19/11).
+Etapas feitas: **simulador da extrusora v1** (19/11) e **sinal analógico 4–20 mA** (20/11).
 
 ## Como rodar
 
@@ -18,6 +18,8 @@ Terminal 1, o "CLP" simulado:
 uv run simulador                  # Modbus TCP em 127.0.0.1:5020, atualiza a cada 1 s
 uv run simulador --semente 42     # mesma sequência de valores toda vez
 uv run simulador --sem-falhas     # desliga falhas aleatórias
+uv run simulador --fio-rompido 30 # transmissor de pressão com fio rompido nos primeiros 30 s
+uv run simulador --curto 30       # transmissor de pressão em curto (22 mA) nos primeiros 30 s
 ```
 
 Terminal 2, o leitor:
@@ -71,9 +73,10 @@ O **dicionário é a fonte única da verdade**: o simulador e o leitor usam o me
 | 10 | EXT01_ROSCA_RPM | UINT16 × 0,1 | 1234 = 123,4 rpm |
 | 11 | LIN01_VELOCIDADE | UINT16 | m/min |
 | 12–13 | LIN01_DIAMETRO | FLOAT32 ABCD | mm |
+| 14 | EXT01_PRESSAO_MASSA | 4–20 mA em µA | 12000 = 12 mA = 250 bar (faixa 0–500 bar) |
 | 20 | bit 0: EXT01_FALHA · bit 1: LIN01_FALHA_PUXADOR · bit 2: LIN01_EMERGENCIA | bits | 3 sinais no mesmo registrador |
 
-Os registradores 8–9 e 14–19 ficam vagos e são lidos como 0. Num CLP real também há buracos assim, e ler o bloco inteiro ainda compensa.
+Os registradores 8–9 e 15–19 ficam vagos e são lidos como 0. Num CLP real também há buracos assim, e ler o bloco inteiro ainda compensa.
 
 ## Atividades de 19/11: tipos de dados no Modbus
 
@@ -85,7 +88,30 @@ Os registradores 8–9 e 14–19 ficam vagos e são lidos como 0. Num CLP real t
 6. **Bits:** rode `uv run simulador --sem-falhas` e provoque uma falha pelo código (`extrusora.forcar_falha(...)` em `executar`). Veja o registrador 20 mudar: `0b001`, `0b100` etc.
 7. **Compare com o pymodbus:** no leitor, decodifique uma temperatura também com `client.convert_from_registers(regs, data_type=client.DATATYPE.FLOAT32)` e confira que dá o mesmo valor do `codec.py`.
 
-Próximo passo (20/11, opcional): escala 4–20 mA → unidade de engenharia, mais realismo no simulador.
+## Atividades de 20/11: sinal analógico 4–20 mA
+
+O projeto vai instalar "cartões de entrada analógica". Um transmissor converte a grandeza física (pressão, temperatura) numa corrente de 4 a 20 mA, e o cartão do CLP mede essa corrente. Aqui o cartão entrega a corrente em **µA** num registrador (4000 a 20000).
+
+Para o exemplo entrou uma tag nova no dicionário, `EXT01_PRESSAO_MASSA` (pressão de massa no cabeçote, faixa 0–500 bar). Ela está marcada como **sugestão**, porque não aparece no documento do projeto.
+
+**Conceitos**
+
+- **Conversão em duas etapas:** registrador → mA (`µA ÷ 1000`) → unidade de engenharia (`mín + (mA − 4) ÷ 16 × (máx − mín)`). A faixa do transmissor (`faixa_instrumento_min/max`) é uma coluna nova do dicionário, diferente da faixa válida.
+- **Por que 4 mA e não 0:** é o "zero vivo". 0 mA passa a significar "sem sinal" (fio rompido, transmissor desligado), e isso permite diagnosticar o instrumento.
+- **NAMUR NE43**, o padrão de fato:
+  - 3,8 a 20,5 mA: faixa de medição. Abaixo de 4 ou acima de 20, o valor está saturado.
+  - Abaixo de 3,6 mA ou acima de 21 mA: falha do sensor.
+  - Entre essas faixas: zona indefinida.
+- **Falha de sensor ≠ falha de processo.** Fio rompido não para a linha, só estraga a medição. Por isso o leitor mostra `—` em vez de um número: converter 0 mA daria −125 bar, lixo com cara de valor. Em dado de produção, isso vira flag de qualidade, não alerta de processo.
+
+**Exercícios**
+
+1. Rode `uv run leitor` e confira a coluna de qualidade da pressão: a corrente em mA aparece ao lado do valor em bar. Faça a conta de cabeça: 12 mA ≈ 250 bar.
+2. Rode `uv run simulador --fio-rompido 30` e veja o leitor mostrar `FALHA: CORRENTE BAIXA` por 30 s e depois voltar sozinho.
+3. Repare que a pressão cai quando a extrusora para (a rosca para de girar) e sobe um pouco quando o cabeçote esfria (material mais viscoso). Provoque uma falha da extrusora e observe.
+4. **Faixa que não começa em zero:** mude `faixa_instrumento_min` da pressão para `50` no CSV e rode os dois de novo. O que muda na corrente para a mesma pressão?
+5. **Outra convenção de cartão:** CLPs Siemens costumam entregar 4–20 mA como contagem de 0 a 27648, e não em µA. Escreva em `codec.py` uma função `contagem_siemens_para_ma` e um teste para ela.
+6. Leia `tests/test_analogico.py`: ele cobre escala, saturação, NE43 e o caso do fio rompido.
 
 ## Observação sobre o pymodbus
 

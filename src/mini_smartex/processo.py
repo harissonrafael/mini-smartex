@@ -29,11 +29,13 @@ DIAMETRO = "LIN01_DIAMETRO"
 FALHA_EXTRUSORA = "EXT01_FALHA"
 FALHA_PUXADOR = "LIN01_FALHA_PUXADOR"
 EMERGENCIA = "LIN01_EMERGENCIA"
+PRESSAO_MASSA = "EXT01_PRESSAO_MASSA"
 
 TAGS_SIMULADAS = (
     TEMP_ZONA1, TEMP_ZONA3, TEMP_COLAR, TEMP_CABECA,
     ROSCA_RPM, VELOCIDADE, DIAMETRO,
     FALHA_EXTRUSORA, FALHA_PUXADOR, EMERGENCIA,
+    PRESSAO_MASSA,
 )
 
 SETPOINTS_TEMPERATURA = {
@@ -46,6 +48,14 @@ TEMPERATURA_AMBIENTE = 25.0
 RPM_NOMINAL = 60.0
 VELOCIDADE_NOMINAL = 300.0  # m/min
 DIAMETRO_NOMINAL = 8.0  # mm
+PRESSAO_NOMINAL = 250.0  # bar, com rotação nominal e cabeçote no setpoint
+
+# Corrente que o cartão enxerga com o transmissor defeituoso (ver NE43 no codec)
+CORRENTE_FIO_ROMPIDO_MA = 0.0  # nenhuma corrente chega ao cartão
+CORRENTE_CURTO_MA = 22.0  # acima de 21 mA: curto-circuito
+
+# Falhas de instrumento (não param a linha, só estragam a medição)
+FALHAS_SENSOR = {PRESSAO_MASSA: (0.0005, (20, 120))}
 
 # Falhas: chance de começar a cada segundo e duração (min, max) em segundos
 FALHAS = {
@@ -67,6 +77,24 @@ class Extrusora:
         self.deriva_diametro = 0.0
         self.diametro = DIAMETRO_NOMINAL
         self.falhas: dict[str, float] = {}  # tag -> segundos restantes
+        self.falhas_sensor: dict[str, float] = {}  # tag do sensor -> segundos restantes
+        self._corrente_falha: dict[str, float] = {}  # tag do sensor -> mA durante o defeito
+
+    @property
+    def sensores_com_falha(self) -> dict[str, float]:
+        """Sensores 4–20 mA com defeito neste instante: {tag: corrente em mA}."""
+        return {
+            tag: self._corrente_falha.get(tag, CORRENTE_FIO_ROMPIDO_MA) for tag in self.falhas_sensor
+        }
+
+    def forcar_falha_sensor(
+        self, tag: str, segundos: float, corrente_ma: float = CORRENTE_FIO_ROMPIDO_MA
+    ) -> None:
+        """Simula um defeito no transmissor: fio rompido (0 mA, padrão) ou curto (22 mA)."""
+        if tag not in FALHAS_SENSOR:
+            raise ValueError(f"sensor desconhecido: {tag}")
+        self.falhas_sensor[tag] = segundos
+        self._corrente_falha[tag] = corrente_ma
 
     def forcar_falha(self, tag: str, segundos: float) -> None:
         """Provoca uma falha de propósito (útil em testes e exercícios)."""
@@ -108,21 +136,33 @@ class Extrusora:
             ROSCA_RPM: max(0.0, self.rpm + self._rng.gauss(0, 0.2) * (self.rpm > 0)),
             VELOCIDADE: max(0.0, self.velocidade + self._rng.gauss(0, 1.0) * (self.velocidade > 0)),
             DIAMETRO: max(0.0, self.diametro + self._rng.gauss(0, 0.01)),
+            PRESSAO_MASSA: self._pressao(),
             FALHA_EXTRUSORA: FALHA_EXTRUSORA in self.falhas,
             FALHA_PUXADOR: FALHA_PUXADOR in self.falhas,
             EMERGENCIA: EMERGENCIA in self.falhas,
         }
 
+    def _pressao(self) -> float:
+        """Pressão sobe com a rotação e com material mais frio (mais viscoso)."""
+        viscosidade = 1 + 0.01 * (SETPOINTS_TEMPERATURA[TEMP_CABECA] - self.temperaturas[TEMP_CABECA])
+        pressao = PRESSAO_NOMINAL * (self.rpm / RPM_NOMINAL) * max(0.5, viscosidade)
+        return max(0.0, pressao + self._rng.gauss(0, 2.0) * (self.rpm > 0))
+
     def _atualizar_falhas(self, dt: float) -> None:
-        for tag in list(self.falhas):
-            self.falhas[tag] -= dt
-            if self.falhas[tag] <= 0:
-                del self.falhas[tag]
-        if not self._falhas_aleatorias:
-            return
-        for tag, (chance_por_s, (minimo, maximo)) in FALHAS.items():
-            if tag not in self.falhas and self._rng.random() < chance_por_s * dt:
-                self.falhas[tag] = self._rng.uniform(minimo, maximo)
+        for ativas, catalogo in ((self.falhas, FALHAS), (self.falhas_sensor, FALHAS_SENSOR)):
+            for tag in list(ativas):
+                ativas[tag] -= dt
+                if ativas[tag] <= 0:
+                    del ativas[tag]
+            if not self._falhas_aleatorias:
+                continue
+            for tag, (chance_por_s, (minimo, maximo)) in catalogo.items():
+                if tag not in ativas and self._rng.random() < chance_por_s * dt:
+                    ativas[tag] = self._rng.uniform(minimo, maximo)
+        # Defeitos aleatórios de sensor são sempre fio rompido: esquece o curto já terminado
+        for tag in list(self._corrente_falha):
+            if tag not in self.falhas_sensor:
+                del self._corrente_falha[tag]
 
 
 def _rampa(atual: float, alvo: float, passo_maximo: float) -> float:

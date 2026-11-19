@@ -24,7 +24,13 @@ from pymodbus.server import ModbusTcpServer
 from pymodbus.simulator import DataType, SimData, SimDevice
 
 from mini_smartex import dicionario, mapa, tempo
-from mini_smartex.processo import TAGS_SIMULADAS, Extrusora
+from mini_smartex.processo import (
+    CORRENTE_CURTO_MA,
+    CORRENTE_FIO_ROMPIDO_MA,
+    PRESSAO_MASSA,
+    TAGS_SIMULADAS,
+    Extrusora,
+)
 
 log = logging.getLogger("simulador")
 
@@ -56,17 +62,18 @@ async def atualizar_registradores(
 
     while True:
         valores = extrusora.passo(intervalo)
-        registradores = mapa.montar_registradores(tags, valores)
+        registradores = mapa.montar_registradores(tags, valores, extrusora.sensores_com_falha)
         for inicio, bloco in mapa.agrupar_blocos(registradores):
             await server.async_setValues(DEVICE_ID, FC_HOLDING, inicio, bloco)
 
-        falhas = ", ".join(sorted(extrusora.falhas)) or "nenhuma"
+        falhas = ", ".join(sorted([*extrusora.falhas, *extrusora.falhas_sensor])) or "nenhuma"
         log.info(
-            "Zona1=%.1f °C  RPM=%.1f  Vel=%.0f m/min  Diâm=%.3f mm  Falhas: %s",
+            "Zona1=%.1f °C  RPM=%.1f  Vel=%.0f m/min  Diâm=%.3f mm  Pressão=%.0f bar  Falhas: %s",
             valores["EXT01_TEMP_ZONA1"],
             valores["EXT01_ROSCA_RPM"],
             valores["LIN01_VELOCIDADE"],
             valores["LIN01_DIAMETRO"],
+            valores["EXT01_PRESSAO_MASSA"],
             falhas,
         )
         await asyncio.sleep(intervalo)
@@ -82,6 +89,12 @@ async def executar(args: argparse.Namespace) -> None:
 
     server = ModbusTcpServer(context=criar_dispositivo(), address=(args.host, args.porta))
     extrusora = Extrusora(semente=args.semente, falhas_aleatorias=not args.sem_falhas)
+    if args.fio_rompido:
+        extrusora.forcar_falha_sensor(PRESSAO_MASSA, args.fio_rompido, CORRENTE_FIO_ROMPIDO_MA)
+        log.info("Fio do transmissor de pressão rompido nos primeiros %g s", args.fio_rompido)
+    if args.curto:
+        extrusora.forcar_falha_sensor(PRESSAO_MASSA, args.curto, CORRENTE_CURTO_MA)
+        log.info("Curto no transmissor de pressão nos primeiros %g s", args.curto)
     log.info("Simulador Modbus em %s:%d (Ctrl+C para parar)", args.host, args.porta)
 
     # Servidor e loop de atualização rodam juntos; se um falhar, o outro para.
@@ -97,6 +110,15 @@ def main() -> None:
     parser.add_argument("--intervalo", type=float, default=1.0, help="segundos entre atualizações")
     parser.add_argument("--semente", type=int, default=None, help="semente aleatória (reprodutível)")
     parser.add_argument("--sem-falhas", action="store_true", help="desliga falhas aleatórias")
+    defeito = parser.add_mutually_exclusive_group()
+    defeito.add_argument(
+        "--fio-rompido", type=float, default=0, metavar="SEGUNDOS",
+        help="simula fio rompido no transmissor de pressão (4–20 mA) no início",
+    )
+    defeito.add_argument(
+        "--curto", type=float, default=0, metavar="SEGUNDOS",
+        help="simula curto no transmissor de pressão (4–20 mA) no início",
+    )
     parser.add_argument("--dicionario", default=None, help="caminho do dicionario-de-dados.csv")
     args = parser.parse_args()
 

@@ -31,7 +31,7 @@ class Tag:
     tag: str
     nome: str
     unidade: str
-    tipo_bruto: str  # "FLOAT32", "UINT16" ou "BOOL"
+    tipo_bruto: str  # "FLOAT32", "UINT16", "BOOL" ou "AI_4_20MA"
     registrador: int  # primeiro holding register
     bit: int | None  # só para BOOL
     ordem_palavras: str  # "ABCD" ou "CDAB" (só para FLOAT32)
@@ -40,6 +40,9 @@ class Tag:
     frequencia_s: float | None
     faixa_min: float | None
     faixa_max: float | None
+    # Faixa calibrada do transmissor 4–20 mA: 4 mA = mínimo, 20 mA = máximo.
+    # Não confundir com a faixa válida (limite físico usado na qualidade).
+    faixa_instrumento: tuple[float, float] | None = None
 
     @property
     def quantidade_registradores(self) -> int:
@@ -94,6 +97,14 @@ def _linha_para_tag(linha: dict[str, str]) -> Tag:
     if bit is not None and not 0 <= bit <= 15:
         raise ValueError(f"{nome_tag}: bit fora de 0..15")
 
+    instr_min = _numero(linha.get("faixa_instrumento_min") or "")
+    instr_max = _numero(linha.get("faixa_instrumento_max") or "")
+    faixa_instrumento = None
+    if tipo == "AI_4_20MA":
+        if instr_min is None or instr_max is None or instr_max <= instr_min:
+            raise ValueError(f"{nome_tag}: sinal 4–20 mA precisa de faixa_instrumento_min/max")
+        faixa_instrumento = (instr_min, instr_max)
+
     return Tag(
         tag=nome_tag,
         nome=linha["nome"].strip(),
@@ -107,6 +118,7 @@ def _linha_para_tag(linha: dict[str, str]) -> Tag:
         frequencia_s=_frequencia(linha["frequencia"]),
         faixa_min=_numero(linha["faixa_valida_min"]),
         faixa_max=_numero(linha["faixa_valida_max"]),
+        faixa_instrumento=faixa_instrumento,
     )
 
 
@@ -132,6 +144,8 @@ def _validar_sobreposicao(tags: list[Tag]) -> None:
 
 def _tipo(texto: str) -> str:
     texto = texto.upper()
+    if re.search(r"4\s*[–-]\s*20", texto):
+        return "AI_4_20MA"  # entrada analógica 4–20 mA (corrente em µA no registrador)
     for tipo in ("FLOAT32", "UINT16", "BOOL"):
         if tipo in texto:
             return tipo

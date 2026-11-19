@@ -12,11 +12,18 @@ from mini_smartex import codec
 from mini_smartex.dicionario import Tag
 
 
-def montar_registradores(tags: list[Tag], valores: dict[str, float | bool]) -> dict[int, int]:
+def montar_registradores(
+    tags: list[Tag],
+    valores: dict[str, float | bool],
+    sensores_com_falha: dict[str, float] | None = None,
+) -> dict[int, int]:
     """Devolve {endereço: valor de 16 bits} para todas as tags.
 
     Tags sem valor em `valores` ficam em 0 (o simulador avisa no log).
+    `sensores_com_falha`: {tag: corrente em mA} dos transmissores 4–20 mA com
+    defeito, ex.: 0 mA para fio rompido e 22 mA para curto.
     """
+    sensores_com_falha = sensores_com_falha or {}
     registradores: dict[int, int] = {}
     for t in tags:
         valor = valores.get(t.tag, 0)
@@ -29,13 +36,22 @@ def montar_registradores(tags: list[Tag], valores: dict[str, float | bool]) -> d
         elif t.tipo_bruto == "BOOL":
             atual = registradores.get(t.registrador, 0)
             registradores[t.registrador] = codec.ligar_bit(atual, t.bit, bool(valor))
+        elif t.tipo_bruto == "AI_4_20MA":
+            if t.tag in sensores_com_falha:
+                ma = sensores_com_falha[t.tag]  # corrente do defeito, não a do processo
+            else:
+                ma = codec.valor_para_corrente(float(valor), *t.faixa_instrumento)
+            registradores[t.registrador] = codec.ma_para_microampere(ma)
     return registradores
 
 
 def decodificar(
     tags: list[Tag], registradores: dict[int, int], ordem_forcada: str | None = None
-) -> dict[str, float | bool]:
+) -> dict[str, float | bool | None]:
     """Devolve {tag: valor de engenharia}.
+
+    Sinais 4–20 mA com diagnóstico de falha (NE43) voltam como None: um valor
+    calculado a partir de um fio rompido seria lixo com cara de número.
 
     `ordem_forcada` ignora a ordem do dicionário. Serve para o exercício de
     ver o que acontece quando se lê um FLOAT32 com a ordem errada.
@@ -49,7 +65,23 @@ def decodificar(
             valores[t.tag] = codec.uint16_para_valor(registradores[t.registrador], t.escala, t.offset)
         elif t.tipo_bruto == "BOOL":
             valores[t.tag] = codec.ler_bit(registradores[t.registrador], t.bit)
+        elif t.tipo_bruto == "AI_4_20MA":
+            ma = codec.microampere_para_ma(registradores[t.registrador])
+            if codec.diagnostico_ne43(ma) in codec.DIAGNOSTICOS_DE_FALHA:
+                valores[t.tag] = None
+            else:
+                valores[t.tag] = codec.corrente_para_valor(ma, *t.faixa_instrumento)
     return valores
+
+
+def diagnosticar(tags: list[Tag], registradores: dict[int, int]) -> dict[str, tuple[float, str]]:
+    """Para cada sinal 4–20 mA: (corrente em mA, diagnóstico NE43)."""
+    resultado: dict[str, tuple[float, str]] = {}
+    for t in tags:
+        if t.tipo_bruto == "AI_4_20MA":
+            ma = codec.microampere_para_ma(registradores[t.registrador])
+            resultado[t.tag] = (ma, codec.diagnostico_ne43(ma))
+    return resultado
 
 
 def faixa_de_leitura(tags: list[Tag]) -> tuple[int, int]:

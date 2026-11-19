@@ -10,6 +10,9 @@ Este é o coração da atividade de 19/11. Um registrador Modbus guarda só
   então o valor real é 123,4.
 - Bits: vários sinais liga/desliga (falhas, emergência) dividem o mesmo
   registrador, um bit para cada.
+- Sinal analógico 4–20 mA (atividade de 20/11): o transmissor converte a
+  grandeza física numa corrente; o cartão analógico do CLP mede a corrente
+  e a entrega num registrador. Aqui o cartão entrega em µA (4000 a 20000).
 
 O pymodbus tem conversores prontos (client.convert_from_registers). Aqui
 fazemos à mão com `struct` para entender o que acontece por baixo.
@@ -64,3 +67,63 @@ def _ordem(ordem: str) -> str:
     if ordem not in ORDENS:
         raise ValueError(f"ordem de palavras desconhecida: {ordem!r} (use {ORDENS})")
     return ordem
+
+
+# --------------------------------------------------------------------------
+# Sinais analógicos 4–20 mA
+# --------------------------------------------------------------------------
+# Por que 4 mA e não 0 mA? Porque 0 mA passa a significar "sem sinal":
+# fio rompido, transmissor sem alimentação. Esse "zero vivo" permite
+# diagnosticar o instrumento, coisa que um sinal 0–10 V não permite.
+#
+# Faixas da recomendação NAMUR NE43 (padrão de fato na indústria):
+#   3,8 a 20,5 mA  -> faixa de medição (abaixo de 4 / acima de 20 = saturado)
+#   < 3,6 mA       -> falha (ex.: fio rompido)
+#   > 21,0 mA      -> falha (ex.: curto-circuito)
+#   entre esses    -> zona indefinida: não confie no valor
+
+CORRENTE_MIN_MA = 4.0
+CORRENTE_MAX_MA = 20.0
+
+DIAG_OK = "ok"
+DIAG_SATURADO = "saturado"
+DIAG_INDEFINIDO = "indefinido"
+DIAG_FALHA_BAIXA = "falha: corrente baixa (fio rompido?)"
+DIAG_FALHA_ALTA = "falha: corrente alta (curto?)"
+DIAGNOSTICOS_DE_FALHA = (DIAG_FALHA_BAIXA, DIAG_FALHA_ALTA, DIAG_INDEFINIDO)
+
+
+def valor_para_corrente(valor: float, minimo: float, maximo: float) -> float:
+    """Faz o papel do transmissor: 250 bar numa faixa 0–500 -> 12 mA.
+
+    Fora da faixa calibrada, o transmissor satura em 3,8 / 20,5 mA (NE43).
+    """
+    ma = CORRENTE_MIN_MA + (valor - minimo) / (maximo - minimo) * (CORRENTE_MAX_MA - CORRENTE_MIN_MA)
+    return max(3.8, min(20.5, ma))
+
+
+def corrente_para_valor(ma: float, minimo: float, maximo: float) -> float:
+    """Inverso: 12 mA numa faixa 0–500 bar -> 250 bar. Interpolação linear."""
+    return minimo + (ma - CORRENTE_MIN_MA) / (CORRENTE_MAX_MA - CORRENTE_MIN_MA) * (maximo - minimo)
+
+
+def diagnostico_ne43(ma: float) -> str:
+    """Classifica a corrente segundo a NAMUR NE43."""
+    if ma < 3.6:
+        return DIAG_FALHA_BAIXA
+    if ma > 21.0:
+        return DIAG_FALHA_ALTA
+    if ma < 3.8 or ma > 20.5:
+        return DIAG_INDEFINIDO
+    if ma < CORRENTE_MIN_MA or ma > CORRENTE_MAX_MA:
+        return DIAG_SATURADO
+    return DIAG_OK
+
+
+def ma_para_microampere(ma: float) -> int:
+    """12.0 mA -> 12000 µA (cabe num registrador de 16 bits)."""
+    return max(0, min(65535, round(ma * 1000)))
+
+
+def microampere_para_ma(ua: int) -> float:
+    return ua / 1000
