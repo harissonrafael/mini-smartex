@@ -2,6 +2,7 @@
 
 - `montar_registradores`: valores de engenharia -> registradores (usado pelo simulador).
 - `decodificar`: registradores -> valores de engenharia (usado pelo leitor).
+- `diagnosticar`: corrente (mA) e diagnóstico NE43 dos sinais 4–20 mA (usado pelo leitor).
 
 As duas funções não dependem do pymodbus, então dá para testar sem rede.
 """

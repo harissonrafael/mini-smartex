@@ -4,6 +4,8 @@ Uso:
     uv run simulador                 # 127.0.0.1:5020, atualiza a cada 1 s
     uv run simulador --semente 42    # mesma sequência de valores toda vez
     uv run simulador --sem-falhas    # sem falhas aleatórias
+    uv run simulador --fio-rompido 30  # pressão com fio rompido (0 mA) nos primeiros 30 s
+    uv run simulador --curto 30        # pressão em curto (22 mA) nos primeiros 30 s
 
 O mapa de registradores sai do docs/dicionario-de-dados.csv.
 

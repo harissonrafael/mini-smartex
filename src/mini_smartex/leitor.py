@@ -7,6 +7,9 @@ Uso:
     uv run leitor                        # lê a cada 1 s
     uv run leitor --uma-vez              # lê uma vez e sai
     uv run leitor --ordem-forcada CDAB   # exercício: lê os FLOAT32 na ordem errada
+    uv run leitor --reconexao 2          # tenta reconectar a cada 2 s (padrão: 5 s)
+
+Se o servidor cair, o leitor tenta reconectar sozinho (exceto com --uma-vez).
 """
 
 from __future__ import annotations
