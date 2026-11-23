@@ -6,8 +6,12 @@ Uso:
     uv run simulador --sem-falhas    # sem falhas aleatórias
     uv run simulador --fio-rompido 30  # pressão com fio rompido (0 mA) nos primeiros 30 s
     uv run simulador --curto 30        # pressão em curto (22 mA) nos primeiros 30 s
+    uv run simulador --sem-opcua       # só Modbus
+    uv run simulador --desvio-relogio 90  # "CLP" sem NTP, relógio 90 s adiantado
 
-O mapa de registradores sai do docs/dicionario-de-dados.csv.
+O mapa de registradores sai do docs/dicionario-de-dados.csv. Além do Modbus
+(porta 5020), o simulador expõe as mesmas tags por OPC-UA (porta 4840), lidas
+da mesma memória: as duas interfaces sempre mostram o mesmo valor.
 
 API do pymodbus usada (3.16): SimDevice/SimData para criar a memória do
 dispositivo e `server.async_setValues` para atualizá-la. Desde a 3.13 o
@@ -25,7 +29,8 @@ from pathlib import Path
 from pymodbus.server import ModbusTcpServer
 from pymodbus.simulator import DataType, SimData, SimDevice
 
-from mini_smartex import dicionario, mapa, tempo
+from mini_smartex import dicionario, mapa, opcua_comum, tempo
+from mini_smartex.servidor_opcua import ServidorOpcua
 from mini_smartex.processo import (
     CORRENTE_CURTO_MA,
     CORRENTE_FIO_ROMPIDO_MA,
@@ -55,18 +60,29 @@ def criar_dispositivo() -> SimDevice:
 
 
 async def atualizar_registradores(
-    server: ModbusTcpServer, tags: list[dicionario.Tag], extrusora: Extrusora, intervalo: float
+    server: ModbusTcpServer,
+    tags: list[dicionario.Tag],
+    extrusora: Extrusora,
+    intervalo: float,
+    opcua: ServidorOpcua | None = None,
+    desvio_relogio_s: float = 0.0,
 ) -> None:
-    """Loop que avança o processo e escreve os registradores a cada `intervalo` s."""
+    """Loop que avança o processo e escreve os registradores a cada `intervalo` s.
+
+    Com `opcua`, publica também os valores da mesma memória no servidor OPC-UA.
+    """
     sem_modelo = [t.tag for t in tags if t.tag not in TAGS_SIMULADAS]
     if sem_modelo:
         log.warning("Tags do dicionário sem simulação (ficarão em 0): %s", ", ".join(sem_modelo))
 
     while True:
         valores = extrusora.passo(intervalo)
+        amostrado_em = opcua_comum.relogio_da_fonte(desvio_relogio_s)  # relógio do "CLP"
         registradores = mapa.montar_registradores(tags, valores, extrusora.sensores_com_falha)
         for inicio, bloco in mapa.agrupar_blocos(registradores):
             await server.async_setValues(DEVICE_ID, FC_HOLDING, inicio, bloco)
+        if opcua:
+            await opcua.publicar(registradores, amostrado_em)
 
         falhas = ", ".join(sorted([*extrusora.falhas, *extrusora.falhas_sensor])) or "nenhuma"
         log.info(
@@ -99,10 +115,23 @@ async def executar(args: argparse.Namespace) -> None:
         log.info("Curto no transmissor de pressão nos primeiros %g s", args.curto)
     log.info("Simulador Modbus em %s:%d (Ctrl+C para parar)", args.host, args.porta)
 
+    opcua = None
+    if not args.sem_opcua:
+        opcua = ServidorOpcua(tags, f"opc.tcp://{args.host}:{args.porta_opcua}/mini-smartex/")
+        await opcua.iniciar()
+        if args.desvio_relogio:
+            log.info("Relógio do CLP com desvio de %+g s (SourceTimestamp)", args.desvio_relogio)
+
     # Servidor e loop de atualização rodam juntos; se um falhar, o outro para.
-    async with asyncio.TaskGroup() as grupo:
-        grupo.create_task(server.serve_forever())
-        grupo.create_task(atualizar_registradores(server, tags, extrusora, args.intervalo))
+    try:
+        async with asyncio.TaskGroup() as grupo:
+            grupo.create_task(server.serve_forever())
+            grupo.create_task(
+                atualizar_registradores(server, tags, extrusora, args.intervalo, opcua, args.desvio_relogio)
+            )
+    finally:
+        if opcua:
+            await opcua.parar()
 
 
 def main() -> None:
@@ -122,9 +151,16 @@ def main() -> None:
         help="simula curto no transmissor de pressão (4–20 mA) no início",
     )
     parser.add_argument("--dicionario", default=None, help="caminho do dicionario-de-dados.csv")
+    parser.add_argument("--porta-opcua", type=int, default=4840)
+    parser.add_argument("--sem-opcua", action="store_true", help="não sobe o servidor OPC-UA")
+    parser.add_argument(
+        "--desvio-relogio", type=float, default=0.0, metavar="SEGUNDOS",
+        help="adianta (+) ou atrasa (−) o relógio do CLP, que carimba o SourceTimestamp",
+    )
     args = parser.parse_args()
 
     tempo.configurar_logging()
+    logging.getLogger("asyncua").setLevel(logging.WARNING)  # o asyncua é muito verboso em INFO
     try:
         asyncio.run(executar(args))
     except KeyboardInterrupt:

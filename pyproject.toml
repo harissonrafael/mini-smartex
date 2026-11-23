@@ -5,6 +5,7 @@ description = "Mini-SMARTEX: simulador de extrusora e pipeline de dados para est
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "asyncua>=2.1.0",
     "pymodbus>=3.16.2",
     "tzdata>=2026.6",
 ]
@@ -12,6 +13,7 @@ dependencies = [
 [project.scripts]
 simulador = "mini_smartex.simulador:main"
 leitor = "mini_smartex.leitor:main"
+leitor-opcua = "mini_smartex.leitor_opcua:main"
 
 [dependency-groups]
 dev = [
