@@ -37,7 +37,7 @@ uv run leitor-opcua --uma-vez     # lê uma vez e sai
 uv run leitor-opcua --assinatura  # subscription: o servidor avisa só quando algo muda
 ```
 
-Se o simulador cair (ou ainda não estiver rodando), os dois leitores avisam e tenta reconectar sozinho, sem precisar ser reiniciado. Com `--uma-vez` ele tenta conectar uma única vez e sai. O intervalo padrão fica na constante `INTERVALO_RECONEXAO_S`, no topo de `leitor.py`.
+Se o simulador cair (ou ainda não estiver rodando), os dois leitores avisam e tentam reconectar sozinhos, sem precisar ser reiniciados. Com `--uma-vez`, cada um tenta conectar uma única vez e sai. O intervalo padrão fica na constante `INTERVALO_RECONEXAO_S`, no topo de `leitor.py` e de `leitor_opcua.py`.
 
 Os timestamps dos logs e do leitor usam o fuso definido em `tempo.py` (hoje `America/Sao_Paulo`). Para trocar, altere só a constante `FUSO` lá.
 
