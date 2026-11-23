@@ -85,3 +85,52 @@ def test_ida_e_volta_simulador_leitor(tmp_path):
 
 def test_agrupar_blocos():
     assert mapa.agrupar_blocos({0: 1, 1: 2, 5: 3, 6: 4, 20: 5}) == [(0, [1, 2]), (5, [3, 4]), (20, [5])]
+
+
+# --- Coluna endereco_opcua (exercício 6 de 23/11) ---
+
+
+def _csv_opcua(tmp_path: Path, *pares: tuple[str, str]) -> Path:
+    """CSV com a coluna endereco_opcua no fim.
+
+    O NodeId tem ';' (o separador do CSV), então vai entre aspas, e as aspas do
+    próprio valor (NodeIds da Siemens) são dobradas. O Excel faz isso sozinho.
+    """
+    linhas = [
+        f'{_linha(tag, f"HR {i * 2}–{i * 2 + 1}", "FLOAT32")};"{no.replace(chr(34), chr(34) * 2)}"'
+        for i, (tag, no) in enumerate(pares)
+    ]
+    caminho = tmp_path / "dicionario-de-dados.csv"
+    caminho.write_text("\n".join([CABECALHO + ";endereco_opcua", *linhas]), encoding="utf-8-sig")
+    return caminho
+
+
+def test_le_endereco_opcua(tmp_path):
+    caminho = _csv_opcua(tmp_path, ("T1", 'nsu=http://exemplo/s7;s="DB_Extrusora"."TempZona1"'), ("T2", "nsu=urn:x;i=7"))
+    tags = {t.tag: t for t in dicionario.carregar(caminho)}
+    assert tags["T1"].endereco_opcua == 'nsu=http://exemplo/s7;s="DB_Extrusora"."TempZona1"'
+    assert tags["T2"].endereco_opcua == "nsu=urn:x;i=7"
+
+
+def test_sem_coluna_endereco_opcua_fica_none(tmp_path):
+    assert dicionario.carregar(_csv(tmp_path, _linha("T1", "HR 0–1", "FLOAT32")))[0].endereco_opcua is None
+
+
+def test_indice_de_namespace_fixo_e_recusado(tmp_path):
+    with pytest.raises(ValueError, match="índice fixo"):
+        dicionario.carregar(_csv_opcua(tmp_path, ("T1", "ns=2;s=T1")))
+
+
+def test_endereco_opcua_malformado_e_erro(tmp_path):
+    with pytest.raises(ValueError, match="endereco_opcua inválido"):
+        dicionario.carregar(_csv_opcua(tmp_path, ("T1", "nsu=urn:x;x=T1")))
+
+
+def test_endereco_opcua_repetido_e_erro(tmp_path):
+    with pytest.raises(ValueError, match="mesmo endereco_opcua"):
+        dicionario.carregar(_csv_opcua(tmp_path, ("A", "nsu=urn:x;s=A"), ("B", "nsu=urn:x;s=A")))
+
+
+def test_dicionario_real_tem_endereco_opcua_em_todas_as_tags_modbus():
+    tags = dicionario.carregar(dicionario.localizar_dicionario(Path(__file__).parent))
+    assert all(t.endereco_opcua and t.endereco_opcua.startswith("nsu=") for t in tags)

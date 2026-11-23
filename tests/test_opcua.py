@@ -1,6 +1,7 @@
 """Testes do OPC-UA (atividade de 23/11): StatusCode, timestamps e servidor real."""
 
 import asyncio
+import dataclasses
 import socket
 from datetime import datetime, timedelta, timezone
 
@@ -25,6 +26,13 @@ PRESSAO = Tag(
     faixa_min=0.0, faixa_max=500.0, faixa_instrumento=(0.0, 500.0),
 )
 TAGS = [TEMP, FALHA, PRESSAO]
+
+# Para o teste com servidor real: a pressão vem de outro namespace, com NodeId
+# no estilo Siemens S7-1500 (o identificador inclui as aspas), como se o
+# dicionário tivesse a coluna endereco_opcua preenchida com o endereço real.
+URI_S7 = "http://exemplo/simatic-s7-opcua"
+PRESSAO_S7 = dataclasses.replace(PRESSAO, endereco_opcua=f'nsu={URI_S7};s="DB_Extrusora"."PressaoMassa"')
+TAGS_SERVIDOR = [TEMP, FALHA, PRESSAO_S7]
 
 
 def _memoria(pressao_ma: float | None = None) -> dict[int, int]:
@@ -110,15 +118,16 @@ def _porta_livre() -> int:
 def test_servidor_publica_datavalue_completo():
     async def cenario():
         endpoint = f"opc.tcp://127.0.0.1:{_porta_livre()}/teste/"
-        servidor = ServidorOpcua(TAGS, endpoint)
+        servidor = ServidorOpcua(TAGS_SERVIDOR, endpoint)
         await servidor.iniciar()
         try:
             amostra = datetime.now(timezone.utc) - timedelta(seconds=30)  # relógio do CLP 30 s atrasado
             await servidor.publicar(_memoria(), amostra)
             await servidor.publicar(_memoria(0.0), amostra)  # fio rompido na segunda amostra
             async with Client(endpoint) as client:
-                idx = await client.get_namespace_index(opcua_comum.NAMESPACE_URI)
-                nos = [client.get_node(opcua_comum.node_id(t.tag, idx)) for t in TAGS]
+                namespaces = await client.get_namespace_array()
+                enderecos = [opcua_comum.endereco_opcua(t) for t in TAGS_SERVIDOR]
+                nos = [client.get_node(opcua_comum.resolver_node_id(e, namespaces)) for e in enderecos]
                 return amostra, await client.read_attributes(nos)
         finally:
             await servidor.parar()
@@ -131,3 +140,34 @@ def test_servidor_publica_datavalue_completo():
     assert pressao.Value.Value is None  # Bad: a especificação manda entregar valor nulo
     assert opcua_comum.para_utc(temp.SourceTimestamp) == amostra
     assert opcua_comum.atraso_ms(temp.SourceTimestamp, temp.ServerTimestamp) == pytest.approx(30_000, abs=2_000)
+
+
+# --- Endereço OPC-UA no dicionário: URI do namespace, nunca o índice ---
+
+
+def test_endereco_padrao_sem_coluna_no_dicionario():
+    assert opcua_comum.endereco_opcua(TEMP) == "nsu=urn:mini-smartex:extrusora;s=EXT01_TEMP_ZONA1"
+    assert opcua_comum.endereco_opcua(PRESSAO_S7) == f'nsu={URI_S7};s="DB_Extrusora"."PressaoMassa"'
+
+
+def test_indice_segue_a_tabela_de_namespaces_do_servidor():
+    endereco = f'nsu={URI_S7};s="DB_Extrusora"."PressaoMassa"'
+    # Mesmo endereço, dois servidores (ou o mesmo reiniciado) com outra ordem:
+    a = opcua_comum.resolver_node_id(endereco, ["http://opcfoundation.org/UA/", URI_S7])
+    b = opcua_comum.resolver_node_id(endereco, ["http://opcfoundation.org/UA/", "urn:outro", URI_S7])
+    assert (a.NamespaceIndex, b.NamespaceIndex) == (1, 2)
+    assert a.Identifier == b.Identifier == '"DB_Extrusora"."PressaoMassa"'
+
+
+def test_identificador_numerico():
+    no = opcua_comum.resolver_node_id("nsu=urn:x;i=1042", ["http://opcfoundation.org/UA/", "urn:x"])
+    assert no == ua.NodeId(1042, 1)
+
+
+def test_namespace_que_o_servidor_nao_tem_e_erro_claro():
+    with pytest.raises(opcua_comum.NamespaceDesconhecido, match="urn:nada"):
+        opcua_comum.resolver_node_id("nsu=urn:nada;s=X", ["http://opcfoundation.org/UA/"])
+
+
+def test_uris_do_dicionario_sem_repetir():
+    assert opcua_comum.uris_do_dicionario(TAGS_SERVIDOR) == [opcua_comum.NAMESPACE_URI, URI_S7]

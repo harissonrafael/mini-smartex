@@ -46,13 +46,44 @@ STATUS_POR_DIAGNOSTICO = {
 }
 
 
-def node_id(tag: str, indice_namespace: int) -> ua.NodeId:
-    """NodeId de uma tag: ns=<índice>;s=<tag>. Ex.: ns=2;s=EXT01_TEMP_ZONA1.
+class NamespaceDesconhecido(LookupError):
+    """O dicionário cita uma URI de namespace que o servidor não tem."""
 
-    O índice do namespace pode mudar entre servidores (e entre reinícios de
-    alguns servidores): o cliente sempre o descobre pela URI, nunca fixa "2".
+
+def endereco_opcua(tag: Tag) -> str:
+    """Endereço da tag no formato do dicionário: nsu=<URI>;s=<id>.
+
+    Sem a coluna endereco_opcua preenchida, vale o padrão do simulador:
+    a própria tag no namespace do mini-SMARTEX.
     """
-    return ua.NodeId(tag, indice_namespace)
+    return tag.endereco_opcua or f"nsu={NAMESPACE_URI};s={tag.tag}"
+
+
+def uris_do_dicionario(tags: list[Tag]) -> list[str]:
+    """URIs de namespace citadas pelas tags, sem repetir, na ordem em que aparecem."""
+    uris: list[str] = []
+    for t in tags:
+        uri = ua.NodeId.from_string(endereco_opcua(t)).NamespaceUri
+        if uri not in uris:
+            uris.append(uri)
+    return uris
+
+
+def resolver_node_id(endereco: str, namespaces: list[str]) -> ua.NodeId:
+    """'nsu=<URI>;s=<id>' -> NodeId com o índice que a URI tem *neste* servidor.
+
+    `namespaces` é a tabela de namespaces do servidor (client.get_namespace_array()):
+    o índice é a posição da URI nela. Por isso o dicionário guarda a URI, e o
+    coletor resolve o índice a cada conexão.
+    """
+    expandido = ua.NodeId.from_string(endereco)  # vem como ExpandedNodeId, com NamespaceIndex 0
+    uri = expandido.NamespaceUri
+    if uri not in namespaces:
+        raise NamespaceDesconhecido(
+            f"o servidor não tem o namespace {uri!r} (citado em {endereco!r}). "
+            f"Namespaces do servidor: {', '.join(namespaces)}"
+        )
+    return ua.NodeId(expandido.Identifier, namespaces.index(uri), expandido.NodeIdType)
 
 
 def severidade(codigo: int) -> str:

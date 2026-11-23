@@ -69,7 +69,7 @@ mapa.py + codec.py  ──►  registradores  ──►  simulador.py  ──Mod
 
 | Arquivo | Papel |
 |---|---|
-| `dicionario.py` | Lê o CSV do dicionário. Valida endereços e sobreposição de registradores |
+| `dicionario.py` | Lê o CSV do dicionário. Valida endereços Modbus e OPC-UA (`endereco_opcua`) e a sobreposição de registradores e de nós |
 | `codec.py` | Converte valores ↔ registradores de 16 bits: float32 (ABCD/CDAB), inteiro escalado, bits e sinal 4–20 mA (escala, saturação e diagnóstico NAMUR NE43). Feito à mão com `struct`, para entender o que acontece por baixo |
 | `mapa.py` | Monta todos os registradores a partir das tags (simulador), decodifica de volta (leitor) e diagnostica os sinais 4–20 mA |
 | `processo.py` | Modelo simples da linha: inércia térmica, rampas, diâmetro ligado a rotação/velocidade, pressão de massa, falhas aleatórias de processo e de sensor (fio rompido, curto) |
@@ -168,7 +168,23 @@ Com StatusCode Bad, a especificação (Parte 4, §7.7.1) manda o servidor entreg
 3. **Relógio sem NTP:** rode `uv run simulador --desvio-relogio 90`. O `Δ ms` fica em −90000: a fonte está 90 s adiantada. Se o coletor gravasse o SourceTimestamp, as leituras iriam para o futuro, e cruzá-las com outra fonte daria errado. É a hipótese "Relógios" do plano (§7): sem NTP garantido, o coletor carimba a própria hora e guarda o SourceTimestamp numa coluna à parte, para auditoria.
 4. Rode `uv run leitor-opcua --assinatura`. Os bits de falha não aparecem a cada segundo: o servidor só notifica quando o valor ou o StatusCode mudam (`DataChangeTrigger StatusValue`). Em 11 tags, quantas notificações chegam por segundo? Compare com o polling, que lê as 11 sempre.
 5. Derrube o simulador com o `leitor-opcua --assinatura` rodando. O leitor recebe `BadShutdown` na assinatura, avisa a queda e recria a assinatura quando o simulador volta.
-6. **Para pensar:** o dicionário só tem endereços Modbus (`HR 0–1`). Para o coletor ler OPC-UA de um CLP real, o dicionário precisaria de uma coluna de NodeId. Ele seria `ns=<i>;s=...`? E o índice do namespace pode ser fixo? Veja `node_id` em `opcua_comum.py`.
+6. **Para pensar:** o dicionário só tinha endereços Modbus (`HR 0–1`). Para o coletor ler OPC-UA de um CLP real, ele precisa de uma coluna de NodeId. Ele seria `ns=<i>;s=...`? E o índice do namespace pode ser fixo? *Resolvido em 23/11,* veja abaixo.
+
+**Resposta do exercício 6: a coluna `endereco_opcua`**
+
+O índice **não pode** ser fixo. Em `ns=2;s=...`, o `2` é só a posição da URI na tabela de namespaces do servidor, e essa posição muda quando o CLP é atualizado, quando entra um namespace novo antes do seu ou quando a leitura passa por um gateway. A URI não muda. Por isso o dicionário guarda o NodeId na forma `nsu=` da especificação:
+
+```
+nsu=urn:mini-smartex:extrusora;s=EXT01_TEMP_ZONA1
+```
+
+- **`dicionario.py`** lê a coluna e recusa `ns=<número>`, explicando por quê. Também recusa formato inválido e o mesmo nó usado por duas tags.
+- **`leitor_opcua.py`** lê a tabela de namespaces a cada conexão (`get_namespace_array`) e troca a URI pelo índice (`resolver_node_id`). Se o dicionário citar uma URI que o servidor não tem, ele para com um erro de configuração em vez de ficar reconectando: reconectar não resolve.
+- **`servidor_opcua.py`** cria cada nó exatamente no endereço do dicionário e registra toda URI citada lá. Sem a coluna, vale `nsu=urn:mini-smartex:extrusora;s=<tag>`.
+
+O identificador só é o nome da tag no simulador. Num CLP real, quem define é o fabricante: `nsu=<URI do S7>;s="DB_Extrusora"."TempZona1"` no Siemens S7-1500 (as aspas fazem parte do identificador), `s=MAIN.fTempZona1` no Beckhoff, `i=1042` em servidores com identificador numérico. A `tag` continua sendo a chave estável do pipeline; o NodeId é só o endereço na origem, como o `HR 0–1`.
+
+Para ver na prática: copie o dicionário, troque o endereço da pressão por `nsu=http://exemplo/simatic-s7-opcua;s="DB_Extrusora"."PressaoMassa"` e rode `uv run simulador --dicionario <cópia>` e `uv run leitor-opcua --dicionario <cópia>`. O servidor cria o namespace 3 para essa URI e o leitor acha o nó por ela. Depois rode só o leitor com a cópia, contra o simulador com o dicionário original, e veja o erro de namespace desconhecido.
 
 Os testes ficam em `tests/test_opcua.py`. O último sobe um servidor OPC-UA de verdade numa porta livre e lê dele com um cliente de verdade.
 

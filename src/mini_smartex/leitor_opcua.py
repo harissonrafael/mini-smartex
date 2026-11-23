@@ -6,7 +6,8 @@ Uso:
     uv run leitor-opcua --assinatura    # subscription: o servidor avisa quando muda
     uv run leitor-opcua --reconexao 2   # tenta reconectar a cada 2 s (padrão: 5 s)
 
-Compare com o leitor Modbus: aqui não há endereço, escala nem ordem de
+Compare com o leitor Modbus: o endereço é um NodeId (coluna endereco_opcua
+do dicionário) e não há escala nem ordem de
 palavras. O servidor já entrega o valor em unidade de engenharia, com tipo,
 qualidade (StatusCode) e hora da amostra (SourceTimestamp).
 """
@@ -99,9 +100,14 @@ async def conectar(client: Client, espera: float, insistir: bool) -> bool:
 
 async def sessao(client: Client, tags: list[dicionario.Tag], args: argparse.Namespace) -> None:
     """Uma sessão conectada: lê (ou assina) até a conexão cair ou terminar."""
-    # O índice do namespace é descoberto pela URI a cada conexão: nunca fixe "ns=2".
-    idx = await client.get_namespace_index(opcua_comum.NAMESPACE_URI)
-    nos = [client.get_node(opcua_comum.node_id(t.tag, idx)) for t in tags]
+    # O dicionário guarda a URI do namespace (nsu=...), não o índice. O índice
+    # é a posição da URI na tabela do servidor, lida de novo a cada conexão:
+    # se o servidor reiniciar com outra ordem, o coletor continua certo.
+    namespaces = await client.get_namespace_array()
+    nos = [
+        client.get_node(opcua_comum.resolver_node_id(opcua_comum.endereco_opcua(t), namespaces))
+        for t in tags
+    ]
 
     if args.assinatura:
         handler = Notificacoes({no.nodeid: t for no, t in zip(nos, tags)})
@@ -115,7 +121,7 @@ async def sessao(client: Client, tags: list[dicionario.Tag], args: argparse.Name
     while True:
         # Uma requisição Read para todos os nós, como o bloco contíguo do Modbus.
         valores = await client.read_attributes(nos)
-        print(f"\n[{tempo.agora().isoformat(timespec='seconds')}] {len(nos)} nós lidos (ns={idx})")
+        print(f"\n[{tempo.agora().isoformat(timespec='seconds')}] {len(nos)} nós lidos")
         print(formatar(tags, valores))
         if args.uma_vez:
             return
@@ -134,6 +140,10 @@ async def executar(args: argparse.Namespace) -> None:
         try:
             await sessao(client, tags, args)
             return  # --uma-vez
+        except opcua_comum.NamespaceDesconhecido as erro:
+            # Erro de configuração, não de rede: reconectar não resolve.
+            print(f"Dicionário e servidor não batem: {erro}")
+            return
         except (OSError, asyncio.TimeoutError, ua.UaError, ConnectionError) as erro:
             print(f"[{tempo.agora():%H:%M:%S %Z}] Conexão perdida com o servidor OPC-UA ({type(erro).__name__}).")
             if args.uma_vez:

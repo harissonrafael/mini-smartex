@@ -23,6 +23,14 @@ _RE_ENDERECO = re.compile(
     r"^HR\s+(\d+)(?:\s*[–-]\s*(\d+))?(?:\s+bit\s+(\d+))?$", re.IGNORECASE
 )
 
+# Endereço OPC-UA com a URI do namespace (forma "nsu=" da especificação):
+#   nsu=urn:mini-smartex:extrusora;s=EXT01_TEMP_ZONA1
+#   nsu=http://www.siemens.com/simatic-s7-opcua;s="DB_Extrusora"."TempZona1"
+# O tipo do identificador é s (texto), i (número), g (GUID) ou b (bytes).
+# A forma "ns=3;s=..." é recusada: o índice 3 é só a posição da URI na tabela
+# de namespaces do servidor e pode mudar; a URI não muda.
+_RE_ENDERECO_OPCUA = re.compile(r"^nsu=([^;]+);([sigb])=(.+)$")
+
 
 @dataclass(frozen=True)
 class Tag:
@@ -43,6 +51,9 @@ class Tag:
     # Faixa calibrada do transmissor 4–20 mA: 4 mA = mínimo, 20 mA = máximo.
     # Não confundir com a faixa válida (limite físico usado na qualidade).
     faixa_instrumento: tuple[float, float] | None = None
+    # NodeId no servidor OPC-UA, na forma "nsu=<URI>;s=<id>". None = sem
+    # endereço OPC-UA no dicionário (o simulador usa o padrão de opcua_comum).
+    endereco_opcua: str | None = None
 
     @property
     def quantidade_registradores(self) -> int:
@@ -105,6 +116,18 @@ def _linha_para_tag(linha: dict[str, str]) -> Tag:
             raise ValueError(f"{nome_tag}: sinal 4–20 mA precisa de faixa_instrumento_min/max")
         faixa_instrumento = (instr_min, instr_max)
 
+    endereco_opcua = _texto_ou_vazio(linha.get("endereco_opcua") or "") or None
+    if endereco_opcua:
+        if endereco_opcua.startswith("ns="):
+            raise ValueError(
+                f"{nome_tag}: endereco_opcua com índice fixo ({endereco_opcua!r}). Use a URI do "
+                "namespace (nsu=<URI>;s=<id>): o índice pode mudar entre servidores e reinícios"
+            )
+        if not _RE_ENDERECO_OPCUA.match(endereco_opcua):
+            raise ValueError(
+                f"{nome_tag}: endereco_opcua inválido: {endereco_opcua!r} (esperado nsu=<URI>;s=<id>)"
+            )
+
     return Tag(
         tag=nome_tag,
         nome=linha["nome"].strip(),
@@ -119,11 +142,13 @@ def _linha_para_tag(linha: dict[str, str]) -> Tag:
         faixa_min=_numero(linha["faixa_valida_min"]),
         faixa_max=_numero(linha["faixa_valida_max"]),
         faixa_instrumento=faixa_instrumento,
+        endereco_opcua=endereco_opcua,
     )
 
 
 def _validar_sobreposicao(tags: list[Tag]) -> None:
-    """Dois valores não podem ocupar o mesmo registrador (exceto bits diferentes)."""
+    """Dois valores não podem ocupar o mesmo registrador (exceto bits diferentes)
+    nem o mesmo nó OPC-UA."""
     ocupado: dict[int, str] = {}
     bits: dict[tuple[int, int], str] = {}
     for t in tags:
@@ -140,6 +165,13 @@ def _validar_sobreposicao(tags: list[Tag]) -> None:
     for (r, _), nome in bits.items():
         if r in ocupado:
             raise ValueError(f"{nome} usa o registrador {r}, que já é de {ocupado[r]}")
+
+    nos: dict[str, str] = {}
+    for t in tags:
+        if t.endereco_opcua:
+            if t.endereco_opcua in nos:
+                raise ValueError(f"{t.tag} e {nos[t.endereco_opcua]} usam o mesmo endereco_opcua")
+            nos[t.endereco_opcua] = t.tag
 
 
 def _tipo(texto: str) -> str:
