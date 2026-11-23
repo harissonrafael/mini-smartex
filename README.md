@@ -116,7 +116,7 @@ Para o exemplo entrou uma tag nova no dicionário, `EXT01_PRESSAO_MASSA` (press�
 2. Rode `uv run simulador --fio-rompido 30` e veja o leitor mostrar `FALHA: CORRENTE BAIXA` por 30 s e depois voltar sozinho. Repita com `--curto 30` e compare: agora a corrente é 22 mA e o diagnóstico é `FALHA: CORRENTE ALTA`. As duas opções não podem ser usadas juntas.
 3. Repare que a pressão cai quando a extrusora para (a rosca para de girar) e sobe um pouco quando o cabeçote esfria (material mais viscoso). Provoque uma falha da extrusora e observe.
 4. **Faixa que não começa em zero:** mude `faixa_instrumento_min` da pressão para `50` no CSV e rode os dois de novo. O que muda na corrente para a mesma pressão?
-5. **Outra convenção de cartão:** CLPs Siemens costumam entregar 4–20 mA como contagem de 0 a 27648, e não em µA. Escreva em `codec.py` uma função `contagem_siemens_para_ma` e um teste para ela.
+5. **Outra convenção de cartão:** CLPs Siemens costumam entregar 4–20 mA como contagem de 0 a 27648, e não em µA. Escreva em `codec.py` uma função `contagem_siemens_para_ma` e um teste para ela. *Feito em 23/11:* `contagem_siemens_para_ma`, o inverso `ma_para_contagem_siemens` (satura em −4864..32511, o under/overrange do cartão) e `registrador_para_int16` (a contagem tem sinal, mas o Modbus entrega uint16). Testes no fim de `tests/test_analogico.py`.
 6. Leia `tests/test_analogico.py`: ele cobre escala, saturação, NE43 e os casos de fio rompido e curto.
 
 ## Observação sobre o pymodbus

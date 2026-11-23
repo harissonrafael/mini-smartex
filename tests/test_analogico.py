@@ -96,3 +96,40 @@ def test_pressao_acompanha_a_rotacao_e_falha_de_sensor_nao_para_a_linha():
     valores = extrusora.passo()
     assert PRESSAO_MASSA in extrusora.sensores_com_falha
     assert valores["LIN01_VELOCIDADE"] == pytest.approx(300, abs=5)  # linha segue andando
+
+
+# --- Convenção Siemens: contagem 0..27648 (exercício 5) ---
+
+
+@pytest.mark.parametrize(
+    "contagem, ma",
+    [(0, 4.0), (6912, 8.0), (13824, 12.0), (27648, 20.0)],
+)
+def test_siemens_contagem_ma(contagem, ma):
+    assert codec.contagem_siemens_para_ma(contagem) == pytest.approx(ma)
+    assert codec.ma_para_contagem_siemens(ma) == contagem
+
+
+def test_siemens_pressao_de_ponta_a_ponta():
+    # 13824 contagens = 12 mA = 250 bar na faixa 0–500
+    ma = codec.contagem_siemens_para_ma(13824)
+    assert codec.corrente_para_valor(ma, 0, 500) == pytest.approx(250)
+
+
+def test_siemens_underrange_e_overrange():
+    assert codec.contagem_siemens_para_ma(-4864) == pytest.approx(1.185, abs=1e-3)
+    assert codec.contagem_siemens_para_ma(32511) == pytest.approx(22.81, abs=1e-2)
+    assert codec.ma_para_contagem_siemens(0.0) == -4864  # satura
+    assert codec.ma_para_contagem_siemens(30.0) == 32511
+
+
+@pytest.mark.parametrize("contagem", [32767, -32768, 40000, -5000])
+def test_siemens_fora_do_limite_levanta(contagem):
+    with pytest.raises(ValueError):
+        codec.contagem_siemens_para_ma(contagem)
+
+
+def test_registrador_uint16_para_int16():
+    assert codec.registrador_para_int16(13824) == 13824
+    assert codec.registrador_para_int16(65535) == -1
+    assert codec.registrador_para_int16(0x8000) == -32768

@@ -120,6 +120,43 @@ def diagnostico_ne43(ma: float) -> str:
     return DIAG_OK
 
 
+# Convenção Siemens (cartões analógicos S7): a entrada vem como inteiro com
+# sinal de 16 bits. Em 4–20 mA, 4 mA = 0 e 20 mA = 27648 (valor nominal).
+# Acima disso há margem de overrange até 32511 (~22,81 mA) e abaixo, de
+# underrange até -4864 (~1,19 mA). Fora desses limites o cartão sinaliza
+# erro (32767 = overflow/fio rompido, conforme a configuração).
+SIEMENS_FUNDO_ESCALA = 27648
+SIEMENS_OVERRANGE_MAX = 32511
+SIEMENS_UNDERRANGE_MIN = -4864
+
+
+def contagem_siemens_para_ma(contagem: int) -> float:
+    """0 -> 4 mA; 27648 -> 20 mA; 13824 -> 12 mA.
+
+    Aceita a contagem como o CLP a entrega (inteiro com sinal). Um registrador
+    Modbus lido como uint16 chega como 65535 para -1: converta antes com
+    `registrador_para_int16`. Valores além do overrange/underrange não são
+    medição válida e levantam ValueError.
+    """
+    if not SIEMENS_UNDERRANGE_MIN <= contagem <= SIEMENS_OVERRANGE_MAX:
+        raise ValueError(
+            f"contagem {contagem} fora de {SIEMENS_UNDERRANGE_MIN}..{SIEMENS_OVERRANGE_MAX} "
+            "(overflow, underflow ou fio rompido no cartão)"
+        )
+    return CORRENTE_MIN_MA + contagem / SIEMENS_FUNDO_ESCALA * (CORRENTE_MAX_MA - CORRENTE_MIN_MA)
+
+
+def ma_para_contagem_siemens(ma: float) -> int:
+    """Inverso: 12 mA -> 13824. Satura nos limites de under/overrange."""
+    contagem = round((ma - CORRENTE_MIN_MA) / (CORRENTE_MAX_MA - CORRENTE_MIN_MA) * SIEMENS_FUNDO_ESCALA)
+    return max(SIEMENS_UNDERRANGE_MIN, min(SIEMENS_OVERRANGE_MAX, contagem))
+
+
+def registrador_para_int16(registrador: int) -> int:
+    """Complemento de dois: 65535 -> -1; 0x8000 -> -32768."""
+    return registrador - 0x10000 if registrador >= 0x8000 else registrador
+
+
 def ma_para_microampere(ma: float) -> int:
     """12.0 mA -> 12000 µA (cabe num registrador de 16 bits)."""
     return max(0, min(65535, round(ma * 1000)))
